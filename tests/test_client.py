@@ -130,6 +130,11 @@ async def test_single_panel_does_not_touch_panel_2_firmware() -> None:
     assert firmware_reads == [(999, 4, 1)]
 
 
+def test_client_can_be_constructed_outside_a_running_event_loop() -> None:
+    unit = KomfoventClient(Config())
+    assert unit._modbus is None
+
+
 def test_config_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in (
         "KOMFOVENT_HOST",

@@ -50,19 +50,15 @@ class KomfoventClient:
     (500 ms by default), which is the minimum the controller manual allows.
     """
 
-    def __init__(self, config: Config, modbus: Any | None = None) -> None:
+    def __init__(self, config: Config, modbus: Any = None) -> None:
         self.config = config
-        self._modbus = modbus or AsyncModbusTcpClient(
-            config.host,
-            port=config.port,
-            timeout=config.timeout,
-            retries=0,
-        )
+        self._modbus: Any = modbus
         self._lock = asyncio.Lock()
         self._last: float | None = None
 
     async def close(self) -> None:
-        self._modbus.close()
+        if self._modbus is not None:
+            self._modbus.close()
 
     async def get_status(self) -> dict[str, Any]:
         async with self._lock:
@@ -248,6 +244,13 @@ class KomfoventClient:
         return result
 
     async def _ensure(self) -> None:
+        if self._modbus is None:
+            self._modbus = AsyncModbusTcpClient(
+                self.config.host,
+                port=self.config.port,
+                timeout=self.config.timeout,
+                retries=0,
+            )
         if getattr(self._modbus, "connected", False):
             return
         ok = await self._modbus.connect()
@@ -264,6 +267,8 @@ class KomfoventClient:
             await asyncio.sleep(remaining)
 
     def _mark_down(self) -> None:
+        if self._modbus is None:
+            return
         try:
             self._modbus.close()
         except Exception:
