@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "komfovent": {
+      "command": ".venv/bin/python",
+      "args": ["-m", "komfovent_mcp"],
+      "env": {
+        "KOMFOVENT_HOST": "192.168.0.60",
+        "KOMFOVENT_PORT": "502",
+        "KOMFOVENT_UNIT_ID": "1"
+      }
+    }
+  }
+}
