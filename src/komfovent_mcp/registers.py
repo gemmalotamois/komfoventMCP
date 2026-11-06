@@ -28,10 +28,27 @@ REG_PANEL1_FIRMWARE = 1002
 REG_PANEL2_FIRMWARE = 1004
 REG_FILTER_RESET = 1051
 
+REG_TIME = 29
+REG_YEAR = 30
+REG_MONTH_DAY = 31
+REG_EPOCH_TIME = 33
+REG_MODE_SETTINGS_START = 100
+REG_MODE_SETTINGS_COUNT = 59  # 100..158
+
 ALARM_RESET_VALUE = 0x99C6
 TEMPERATURE_MIN = 50  # 5.0 °C, stored as tenths
 TEMPERATURE_MAX = 400  # 40.0 °C
 FLOW_MAX = 200_000
+TIMER_MIN = 0
+TIMER_MAX = 300
+OVERRIDE_DELAY_START_MAX = 10
+OVERRIDE_DELAY_STOP_MAX = 30
+HOLIDAY_MICROVENTILATION_MIN = 1
+HOLIDAY_MICROVENTILATION_MAX = 4
+HOLIDAY_YEAR_MIN = 2017
+HOLIDAY_YEAR_MAX = 2035
+DEFAULT_TIMED_MODE_MINUTES = 60
+DEFAULT_HOLIDAY_DAYS = 1
 
 # This C8 stores specific power as thousandths of W/(m³/h): 572 -> 0.572.
 SPI_SCALE = 1000
@@ -50,7 +67,25 @@ MODES: dict[int, str] = {
     10: "off",
 }
 
-WRITABLE_MODES = ("away", "normal", "intensive", "boost")
+DIRECT_WRITABLE_MODES = ("away", "normal", "intensive", "boost")
+TIMED_MODES: dict[str, int] = {
+    "kitchen": 130,
+    "fireplace": 137,
+    "override": 145,
+}
+WRITABLE_MODES = (
+    *DIRECT_WRITABLE_MODES,
+    "kitchen",
+    "fireplace",
+    "override",
+    "holiday",
+)
+
+OVERRIDE_ACTIVATION: dict[int, str] = {
+    0: "all_time",
+    1: "if_on",
+    2: "if_off",
+}
 
 SCHEDULER_MODES = {
     0: "stay_at_home",
@@ -105,16 +140,48 @@ SETPOINT_BY_MODE = {
     9: REG_AQ_TEMPERATURE,
 }
 
-# supply/extract are 32-bit flow setpoints. Holiday has temperature and heater only.
+# supply/extract are 32-bit flow setpoints. Holiday has temperature, heater,
+# micro-ventilation frequency, and date range.
 MODE_SETTINGS: dict[str, dict[str, int]] = {
     "away": {"supply": 100, "extract": 102, "setpoint": 104, "heating": 105},
     "normal": {"supply": 106, "extract": 108, "setpoint": 110, "heating": 111},
     "intensive": {"supply": 112, "extract": 114, "setpoint": 116, "heating": 117},
     "boost": {"supply": 118, "extract": 120, "setpoint": 122, "heating": 123},
-    "kitchen": {"supply": 124, "extract": 126, "setpoint": 128, "heating": 129},
-    "fireplace": {"supply": 131, "extract": 133, "setpoint": 135, "heating": 136},
-    "override": {"supply": 138, "extract": 140, "setpoint": 142, "heating": 143},
-    "holiday": {"setpoint": 147, "heating": 148},
+    "kitchen": {
+        "supply": 124,
+        "extract": 126,
+        "setpoint": 128,
+        "heating": 129,
+        "timer": 130,
+    },
+    "fireplace": {
+        "supply": 131,
+        "extract": 133,
+        "setpoint": 135,
+        "heating": 136,
+        "timer": 137,
+    },
+    "override": {
+        "supply": 138,
+        "extract": 140,
+        "setpoint": 142,
+        "heating": 143,
+        "activation": 144,
+        "timer": 145,
+        "delay_start": 157,
+        "delay_stop": 158,
+    },
+    "holiday": {
+        "microventilation": 146,
+        "setpoint": 147,
+        "heating": 148,
+        "from_epoch": 149,
+        "until_epoch": 151,
+        "year_from": 153,
+        "month_day_from": 154,
+        "year_until": 155,
+        "month_day_until": 156,
+    },
 }
 
 WRITABLE = frozenset(

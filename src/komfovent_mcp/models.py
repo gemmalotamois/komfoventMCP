@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date, datetime, timezone
 from typing import Any
 
 from komfovent_mcp.errors import KomfoventError
@@ -12,7 +13,15 @@ from komfovent_mcp.registers import (
     FLOW_UNITS,
     HEAT_EXCHANGER,
     HEATING_BITS,
+    HOLIDAY_MICROVENTILATION_MAX,
+    HOLIDAY_MICROVENTILATION_MIN,
+    HOLIDAY_YEAR_MAX,
+    HOLIDAY_YEAR_MIN,
+    MODE_SETTINGS,
     MODES,
+    OVERRIDE_ACTIVATION,
+    OVERRIDE_DELAY_START_MAX,
+    OVERRIDE_DELAY_STOP_MAX,
     REG_ALARMS,
     REG_AQ_TEMPERATURE,
     REG_AUTO,
@@ -37,6 +46,8 @@ from komfovent_mcp.registers import (
     TEMPERATURE_CONTROL,
     TEMPERATURE_MAX,
     TEMPERATURE_MIN,
+    TIMER_MAX,
+    TIMER_MIN,
     WEEKDAYS,
 )
 
@@ -61,6 +72,98 @@ def flow_value(flow: int) -> int:
     if flow < 0 or flow > FLOW_MAX:
         raise KomfoventError(f"Flow must be between 0 and {FLOW_MAX}")
     return flow
+
+
+def timer_minutes_value(minutes: int, *, minimum: int = TIMER_MIN) -> int:
+    if isinstance(minutes, bool):
+        raise KomfoventError("Timer minutes must be an integer")
+    if isinstance(minutes, float) and minutes.is_integer():
+        minutes = int(minutes)
+    if not isinstance(minutes, int):
+        raise KomfoventError("Timer minutes must be an integer")
+    if minutes < minimum or minutes > TIMER_MAX:
+        raise KomfoventError(f"Timer minutes must be between {minimum} and {TIMER_MAX}")
+    return minutes
+
+
+def bounded_int_value(value: int, *, label: str, minimum: int, maximum: int) -> int:
+    if isinstance(value, bool):
+        raise KomfoventError(f"{label} must be an integer")
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    if not isinstance(value, int):
+        raise KomfoventError(f"{label} must be an integer")
+    if value < minimum or value > maximum:
+        raise KomfoventError(f"{label} must be between {minimum} and {maximum}")
+    return value
+
+
+def microventilation_value(value: int) -> int:
+    return bounded_int_value(
+        value,
+        label="Holiday microventilation",
+        minimum=HOLIDAY_MICROVENTILATION_MIN,
+        maximum=HOLIDAY_MICROVENTILATION_MAX,
+    )
+
+
+def override_delay_start_value(minutes: int) -> int:
+    return bounded_int_value(
+        minutes,
+        label="Override delay_start_minutes",
+        minimum=0,
+        maximum=OVERRIDE_DELAY_START_MAX,
+    )
+
+
+def override_delay_stop_value(minutes: int) -> int:
+    return bounded_int_value(
+        minutes,
+        label="Override delay_stop_minutes",
+        minimum=0,
+        maximum=OVERRIDE_DELAY_STOP_MAX,
+    )
+
+
+def override_activation_value(activation: str) -> int:
+    if not isinstance(activation, str):
+        raise KomfoventError(
+            f"Override activation must be one of: {', '.join(OVERRIDE_ACTIVATION.values())}"
+        )
+    name = activation.strip().lower()
+    for code, label in OVERRIDE_ACTIVATION.items():
+        if label == name:
+            return code
+    raise KomfoventError(
+        f"Override activation must be one of: {', '.join(OVERRIDE_ACTIVATION.values())}"
+    )
+
+
+def parse_holiday_date(value: str | date) -> date:
+    if isinstance(value, datetime):
+        parsed = value.date()
+    elif isinstance(value, date):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = date.fromisoformat(value.strip())
+        except ValueError as exc:
+            raise KomfoventError("Holiday dates must be YYYY-MM-DD") from exc
+    else:
+        raise KomfoventError("Holiday dates must be YYYY-MM-DD")
+    if parsed.year < HOLIDAY_YEAR_MIN or parsed.year > HOLIDAY_YEAR_MAX:
+        raise KomfoventError(
+            f"Holiday year must be between {HOLIDAY_YEAR_MIN} and {HOLIDAY_YEAR_MAX}"
+        )
+    return parsed
+
+
+def holiday_date_epoch(value: date) -> int:
+    return int(datetime(value.year, value.month, value.day, tzinfo=timezone.utc).timestamp())
+
+
+def holiday_month_day_word(value: date) -> int:
+    return (value.month << 8) | value.day
 
 
 def describe_alarm(code: int) -> dict[str, Any]:
@@ -198,7 +301,51 @@ def build_status(raw: dict[int, int], *, host: str, unit_id: int) -> dict[str, A
             "next_start": _clock(_raw(raw, REG_NEXT_TIME)),
             "next_weekday": _enum(WEEKDAYS, _raw(raw, REG_NEXT_WEEKDAY)),
         },
+        "modes": _build_modes(raw),
     }
+
+
+def _build_modes(raw: dict[int, int]) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for name, spec in MODE_SETTINGS.items():
+        if name == "holiday":
+            result[name] = {
+                "setpoint_c": _temperature(raw, spec["setpoint"]),
+                "heating": _flag(raw, spec["heating"]),
+                "microventilation": _raw(raw, spec["microventilation"]),
+                "from_date": _holiday_date(raw, spec["year_from"], spec["month_day_from"]),
+                "until_date": _holiday_date(
+                    raw, spec["year_until"], spec["month_day_until"]
+                ),
+            }
+            continue
+        entry: dict[str, Any] = {
+            "supply_flow": _u32(raw, spec["supply"]),
+            "extract_flow": _u32(raw, spec["extract"]),
+            "setpoint_c": _temperature(raw, spec["setpoint"]),
+            "heating": _flag(raw, spec["heating"]),
+        }
+        if "timer" in spec:
+            entry["timer_minutes"] = _raw(raw, spec["timer"])
+        if name == "override":
+            entry["activation"] = _enum(OVERRIDE_ACTIVATION, _raw(raw, spec["activation"]))
+            entry["delay_start_minutes"] = _raw(raw, spec["delay_start"])
+            entry["delay_stop_minutes"] = _raw(raw, spec["delay_stop"])
+        result[name] = entry
+    return result
+
+
+def _holiday_date(raw: dict[int, int], year_reg: int, month_day_reg: int) -> str | None:
+    year = _raw(raw, year_reg)
+    month_day = _raw(raw, month_day_reg)
+    if year is None or month_day is None:
+        return None
+    month = (month_day >> 8) & 0xFF
+    day = month_day & 0xFF
+    try:
+        return date(year, month, day).isoformat()
+    except ValueError:
+        return None
 
 
 def build_alarms(raw: dict[int, int]) -> dict[str, Any]:
