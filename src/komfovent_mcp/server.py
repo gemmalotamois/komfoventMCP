@@ -14,7 +14,16 @@ from komfovent_mcp.config import Config
 
 logger = logging.getLogger("komfovent_mcp")
 
-OperationMode = Literal["away", "normal", "intensive", "boost"]
+OperationMode = Literal[
+    "away",
+    "normal",
+    "intensive",
+    "boost",
+    "kitchen",
+    "fireplace",
+    "override",
+    "holiday",
+]
 SettingsMode = Literal[
     "away",
     "normal",
@@ -25,6 +34,7 @@ SettingsMode = Literal[
     "override",
     "holiday",
 ]
+OverrideActivationMode = Literal["all_time", "if_on", "if_off"]
 
 _READ = ToolAnnotations(
     read_only_hint=True,
@@ -73,9 +83,24 @@ def build_server(client: KomfoventClient) -> MCPServer:
         return await client.set_power(on)
 
     @server.tool(annotations=_WRITE)
-    async def set_mode(mode: OperationMode) -> dict[str, Any]:
-        """Select away, normal, intensive, or boost. Other modes are read-only."""
-        return await client.set_mode(mode)
+    async def set_mode(
+        mode: OperationMode,
+        minutes: int | None = None,
+        from_date: str | None = None,
+        until_date: str | None = None,
+    ) -> dict[str, Any]:
+        """Select away, normal, intensive, boost, kitchen, fireplace, override, or holiday.
+
+        Timed modes (kitchen, fireplace, override) take optional minutes (1-300; defaults
+        to the mode's stored timer or 60). Holiday mode takes optional from_date and
+        until_date as YYYY-MM-DD (defaults to today through tomorrow on the controller clock).
+        """
+        return await client.set_mode(
+            mode,
+            minutes=minutes,
+            from_date=from_date,
+            until_date=until_date,
+        )
 
     @server.tool(annotations=_WRITE)
     async def set_temperature(celsius: float) -> dict[str, Any]:
@@ -114,10 +139,22 @@ def build_server(client: KomfoventClient) -> MCPServer:
         extract_flow: int | None = None,
         setpoint_c: float | None = None,
         heating: bool | None = None,
+        timer_minutes: int | None = None,
+        activation: OverrideActivationMode | None = None,
+        delay_start_minutes: int | None = None,
+        delay_stop_minutes: int | None = None,
+        microventilation: int | None = None,
+        from_date: str | None = None,
+        until_date: str | None = None,
     ) -> dict[str, Any]:
-        """Change flow, temperature, or heater enable for one mode. Holiday has no flow settings.
+        """Change settings for one mode (away, normal, intensive, boost, kitchen, fireplace, override, or holiday).
 
-        Flows are in the unit's configured unit (m3/h or l/s). Temperature is °C.
+        Flows are in the unit's configured unit (m3/h or l/s). Temperature is °C (5.0-40.0).
+        timer_minutes (0-300) applies to kitchen, fireplace, and override.
+        activation ('all_time', 'if_on', 'if_off'), delay_start_minutes (0-10), and
+        delay_stop_minutes (0-30) apply to override.
+        microventilation (1-4 times/day), from_date (YYYY-MM-DD), and until_date (YYYY-MM-DD)
+        apply to holiday (which has no flow settings).
         Omit any argument you do not want to change.
         """
         return await client.set_mode_settings(
@@ -126,6 +163,13 @@ def build_server(client: KomfoventClient) -> MCPServer:
             extract_flow=extract_flow,
             setpoint_c=setpoint_c,
             heating=heating,
+            timer_minutes=timer_minutes,
+            activation=activation,
+            delay_start_minutes=delay_start_minutes,
+            delay_stop_minutes=delay_stop_minutes,
+            microventilation=microventilation,
+            from_date=from_date,
+            until_date=until_date,
         )
 
     @server.tool(annotations=_RESET)

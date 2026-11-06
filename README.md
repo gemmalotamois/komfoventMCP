@@ -10,14 +10,14 @@ Register numbers in the Komfovent manuals are 1-based. This server subtracts one
 
 | Tool | Effect |
 | --- | --- |
-| `get_status` | Power, mode, setpoints, temperatures, flows, fans, filter, alarms bits, firmware |
+| `get_status` | Power, mode, setpoints, per-mode configuration (`modes`), temperatures, flows, fans, filter, alarms bits, firmware |
 | `set_power` | On or off |
-| `set_mode` | `away`, `normal`, `intensive`, or `boost` |
+| `set_mode` | `away`, `normal`, `intensive`, `boost`, `kitchen`, `fireplace`, `override` (optional `minutes`), or `holiday` (optional `from_date` / `until_date`) |
 | `set_temperature` | Active mode setpoint and air-quality setpoint, 5.0–40.0 °C |
 | `set_eco` / `set_auto` | ECO and AUTO |
 | `get_alarms` / `reset_alarms` | Active faults and warnings. Reset also restores the previous mode |
 | `get_energy` | Power, recovery, and day/month/total energy in Wh |
-| `set_mode_settings` | Flow, setpoint, or heater enable for one mode |
+| `set_mode_settings` | Flow, setpoint, heater, timer (`kitchen`/`fireplace`/`override`), activation/delays (`override`), or microventilation/dates (`holiday`) |
 | `reset_filters` | Filter clogging calibration |
 
 Resources `komfovent://status`, `komfovent://alarms`, and `komfovent://energy` return the same snapshots.

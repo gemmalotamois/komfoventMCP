@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Awaitable, Callable
+from datetime import date, timedelta
 from typing import Any, TypeVar
 
 from pymodbus.client import AsyncModbusTcpClient
@@ -17,10 +18,21 @@ from komfovent_mcp.models import (
     build_energy,
     build_status,
     flow_value,
+    holiday_date_epoch,
+    holiday_month_day_word,
+    microventilation_value,
+    override_activation_value,
+    override_delay_start_value,
+    override_delay_stop_value,
+    parse_holiday_date,
     temperature_word,
+    timer_minutes_value,
 )
 from komfovent_mcp.registers import (
     ALARM_RESET_VALUE,
+    DEFAULT_HOLIDAY_DAYS,
+    DEFAULT_TIMED_MODE_MINUTES,
+    DIRECT_WRITABLE_MODES,
     MODE_SETTINGS,
     MODES,
     REG_ALARMS,
@@ -30,11 +42,16 @@ from komfovent_mcp.registers import (
     REG_FILTER_RESET,
     REG_FIRMWARE,
     REG_MODE,
+    REG_MODE_SETTINGS_COUNT,
+    REG_MODE_SETTINGS_START,
+    REG_MONTH_DAY,
     REG_PANEL2_FIRMWARE,
     REG_POWER,
     REG_SENSOR_COUNT,
     REG_SENSORS,
+    REG_YEAR,
     SETPOINT_BY_MODE,
+    TIMED_MODES,
     WRITABLE,
     WRITABLE_MODES,
 )
@@ -79,10 +96,52 @@ class KomfoventClient:
             await self._write_u16(REG_POWER, 1 if on else 0)
             return await self._status()
 
-    async def set_mode(self, mode: str) -> dict[str, Any]:
+    async def set_mode(
+        self,
+        mode: str,
+        *,
+        minutes: int | None = None,
+        from_date: str | date | None = None,
+        until_date: str | date | None = None,
+    ) -> dict[str, Any]:
         name = _mode_name(mode, WRITABLE_MODES)
+        if name in DIRECT_WRITABLE_MODES:
+            if minutes is not None or from_date is not None or until_date is not None:
+                raise KomfoventError(
+                    f"{name} mode does not accept minutes, from_date, or until_date"
+                )
+            async with self._lock:
+                await self._write_u16(REG_MODE, _mode_value(name))
+                return await self._status()
+        if name in TIMED_MODES:
+            if from_date is not None or until_date is not None:
+                raise KomfoventError(
+                    f"{name} mode uses minutes, not from_date or until_date"
+                )
+            timer_reg = TIMED_MODES[name]
+            validated_minutes = (
+                timer_minutes_value(minutes, minimum=1) if minutes is not None else None
+            )
+            async with self._lock:
+                if validated_minutes is None:
+                    current = (await self._read(timer_reg, 1)).get(timer_reg, 0)
+                    validated_minutes = (
+                        current if current and current > 0 else DEFAULT_TIMED_MODE_MINUTES
+                    )
+                await self._write_u16(timer_reg, validated_minutes)
+                return await self._status()
+        if minutes is not None:
+            raise KomfoventError("holiday mode uses from_date and until_date, not minutes")
+        start = parse_holiday_date(from_date) if from_date is not None else None
+        end = parse_holiday_date(until_date) if until_date is not None else None
         async with self._lock:
-            await self._write_u16(REG_MODE, _mode_value(name))
+            if start is None:
+                start = await self._controller_date()
+            if end is None:
+                end = start + timedelta(days=DEFAULT_HOLIDAY_DAYS)
+            if end < start:
+                raise KomfoventError("Holiday until_date must not be earlier than from_date")
+            await self._write_holiday_dates(start, end)
             return await self._status()
 
     async def set_temperature(self, celsius: float) -> dict[str, Any]:
@@ -114,23 +173,81 @@ class KomfoventClient:
         extract_flow: int | None = None,
         setpoint_c: float | None = None,
         heating: bool | None = None,
+        timer_minutes: int | None = None,
+        activation: str | None = None,
+        delay_start_minutes: int | None = None,
+        delay_stop_minutes: int | None = None,
+        microventilation: int | None = None,
+        from_date: str | date | None = None,
+        until_date: str | date | None = None,
     ) -> dict[str, Any]:
         name = _mode_name(mode, tuple(MODE_SETTINGS))
         spec = MODE_SETTINGS[name]
-        if (
-            supply_flow is None
-            and extract_flow is None
-            and setpoint_c is None
-            and heating is None
+        if all(
+            value is None
+            for value in (
+                supply_flow,
+                extract_flow,
+                setpoint_c,
+                heating,
+                timer_minutes,
+                activation,
+                delay_start_minutes,
+                delay_stop_minutes,
+                microventilation,
+                from_date,
+                until_date,
+            )
         ):
             raise KomfoventError(
-                "Provide supply_flow, extract_flow, setpoint_c, or heating"
+                "Provide at least one mode setting to change"
             )
         if (supply_flow is not None or extract_flow is not None) and "supply" not in spec:
             raise KomfoventError(f"{name} mode has no supply or extract flow setting")
+        if timer_minutes is not None and "timer" not in spec:
+            raise KomfoventError(f"{name} mode has no timer setting")
+        if (
+            activation is not None
+            or delay_start_minutes is not None
+            or delay_stop_minutes is not None
+        ) and name != "override":
+            raise KomfoventError(
+                "activation, delay_start_minutes, and delay_stop_minutes only apply to override mode"
+            )
+        if (
+            microventilation is not None
+            or from_date is not None
+            or until_date is not None
+        ) and name != "holiday":
+            raise KomfoventError(
+                "microventilation, from_date, and until_date only apply to holiday mode"
+            )
         supply = flow_value(supply_flow) if supply_flow is not None else None
         extract = flow_value(extract_flow) if extract_flow is not None else None
         setpoint = temperature_word(setpoint_c) if setpoint_c is not None else None
+        timer = timer_minutes_value(timer_minutes) if timer_minutes is not None else None
+        act_code = (
+            override_activation_value(activation) if activation is not None else None
+        )
+        delay_start = (
+            override_delay_start_value(delay_start_minutes)
+            if delay_start_minutes is not None
+            else None
+        )
+        delay_stop = (
+            override_delay_stop_value(delay_stop_minutes)
+            if delay_stop_minutes is not None
+            else None
+        )
+        micro = (
+            microventilation_value(microventilation)
+            if microventilation is not None
+            else None
+        )
+        start = parse_holiday_date(from_date) if from_date is not None else None
+        end = parse_holiday_date(until_date) if until_date is not None else None
+        if start is not None and end is not None and end < start:
+            raise KomfoventError("Holiday until_date must not be earlier than from_date")
         async with self._lock:
             if supply is not None:
                 await self._write_u32(spec["supply"], supply)
@@ -140,6 +257,18 @@ class KomfoventClient:
                 await self._write_i16(spec["setpoint"], setpoint)
             if heating is not None:
                 await self._write_u16(spec["heating"], 1 if heating else 0)
+            if timer is not None:
+                await self._write_u16(spec["timer"], timer)
+            if act_code is not None:
+                await self._write_u16(spec["activation"], act_code)
+            if delay_start is not None:
+                await self._write_u16(spec["delay_start"], delay_start)
+            if delay_stop is not None:
+                await self._write_u16(spec["delay_stop"], delay_stop)
+            if micro is not None:
+                await self._write_u16(spec["microventilation"], micro)
+            if start is not None or end is not None:
+                await self._write_holiday_dates(start, end)
             return await self._status()
 
     async def reset_alarms(self) -> dict[str, Any]:
@@ -157,12 +286,8 @@ class KomfoventClient:
     async def _status(self) -> dict[str, Any]:
         raw: dict[int, int] = {}
         raw.update(await self._read(1, 44))
-        mode = raw.get(REG_MODE)
-        setpoint = SETPOINT_BY_MODE.get(mode) if mode is not None else None
-        if setpoint is not None:
-            raw.update(await self._read(setpoint, 1))
-        if setpoint != REG_AQ_TEMPERATURE:
-            raw.update(await self._read(REG_AQ_TEMPERATURE, 1))
+        raw.update(await self._read(REG_MODE_SETTINGS_START, REG_MODE_SETTINGS_COUNT))
+        raw.update(await self._read(REG_AQ_TEMPERATURE, 1))
         raw.update(await self._read(REG_SENSORS, REG_SENSOR_COUNT))
         raw.update(await self._read(REG_FIRMWARE, 4))
         if (raw.get(954) or 0) & 0b10:
@@ -172,6 +297,32 @@ class KomfoventClient:
                 # A missing second panel answers illegal-data on 1004-1005.
                 pass
         return build_status(raw, host=self.config.host, unit_id=self.config.unit_id)
+
+    async def _controller_date(self) -> date:
+        raw = await self._read(REG_YEAR, 2)
+        year = raw.get(REG_YEAR, 0)
+        month_day = raw.get(REG_MONTH_DAY, 0)
+        month = (month_day >> 8) & 0xFF
+        day = month_day & 0xFF
+        try:
+            return date(year, month, day)
+        except ValueError:
+            return date.today()
+
+    async def _write_holiday_dates(
+        self,
+        start: date | None,
+        end: date | None,
+    ) -> None:
+        spec = MODE_SETTINGS["holiday"]
+        if start is not None:
+            await self._write_u32(spec["from_epoch"], holiday_date_epoch(start))
+            await self._write_u16(spec["year_from"], start.year)
+            await self._write_u16(spec["month_day_from"], holiday_month_day_word(start))
+        if end is not None:
+            await self._write_u32(spec["until_epoch"], holiday_date_epoch(end))
+            await self._write_u16(spec["year_until"], end.year)
+            await self._write_u16(spec["month_day_until"], holiday_month_day_word(end))
 
     async def _read(self, register: int, count: int) -> dict[int, int]:
         result = await self._request(

@@ -58,8 +58,70 @@ async def test_air_quality_mode_writes_register_206_once() -> None:
 async def test_set_mode_rejects_modes_the_controller_will_not_accept() -> None:
     unit, modbus = client()
     with pytest.raises(KomfoventError):
-        await unit.set_mode("kitchen")
+        await unit.set_mode("standby")
     assert modbus.writes == []
+
+
+async def test_set_mode_timed_modes_write_timer_registers() -> None:
+    unit, modbus = client({130: 25, 137: 0, 145: 45})
+    await unit.set_mode("kitchen")
+    await unit.set_mode("fireplace")
+    await unit.set_mode("override", minutes=45)
+    assert ("one", 129, 25, 1) in modbus.writes
+    assert ("one", 136, 60, 1) in modbus.writes
+    assert ("one", 144, 45, 1) in modbus.writes
+
+
+async def test_set_mode_holiday_writes_date_and_epoch_registers() -> None:
+    unit, modbus = client({30: 2026, 31: (11 << 8) | 6})
+    await unit.set_mode("holiday")
+    assert ("many", 148, [27373, 6272], 1) in modbus.writes
+    assert ("one", 152, 2026, 1) in modbus.writes
+    assert ("one", 153, (11 << 8) | 6, 1) in modbus.writes
+    assert ("many", 150, [27374, 27136], 1) in modbus.writes
+    assert ("one", 154, 2026, 1) in modbus.writes
+    assert ("one", 155, (11 << 8) | 7, 1) in modbus.writes
+
+
+async def test_set_mode_settings_supports_timed_override_and_holiday_fields() -> None:
+    unit, modbus = client()
+    await unit.set_mode_settings("kitchen", timer_minutes=30)
+    await unit.set_mode_settings("fireplace", timer_minutes=40)
+    await unit.set_mode_settings(
+        "override",
+        timer_minutes=45,
+        activation="if_on",
+        delay_start_minutes=5,
+        delay_stop_minutes=15,
+    )
+    status = await unit.set_mode_settings(
+        "holiday",
+        setpoint_c=18.5,
+        heating=False,
+        microventilation=2,
+        from_date="2026-12-20",
+        until_date="2026-12-27",
+    )
+    assert ("one", 129, 30, 1) in modbus.writes
+    assert ("one", 136, 40, 1) in modbus.writes
+    assert ("one", 144, 45, 1) in modbus.writes
+    assert ("one", 143, 1, 1) in modbus.writes
+    assert ("one", 156, 5, 1) in modbus.writes
+    assert ("one", 157, 15, 1) in modbus.writes
+    assert ("one", 145, 2, 1) in modbus.writes
+    assert ("one", 146, 185, 1) in modbus.writes
+    assert ("one", 147, 0, 1) in modbus.writes
+    assert status["modes"]["override"]["timer_minutes"] == 45
+    assert status["modes"]["override"]["activation"] == "if_on"
+    assert status["modes"]["override"]["delay_start_minutes"] == 5
+    assert status["modes"]["override"]["delay_stop_minutes"] == 15
+    assert status["modes"]["holiday"] == {
+        "setpoint_c": 18.5,
+        "heating": False,
+        "microventilation": 2,
+        "from_date": "2026-12-20",
+        "until_date": "2026-12-27",
+    }
 
 
 async def test_set_power_and_filter_reset_addresses() -> None:
